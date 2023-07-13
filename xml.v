@@ -58,17 +58,13 @@ fn (mut p Parser) peek_char() ?(rune, int) {
 
 struct XMLParser {
   Parser
-  on_open_tag fn(tag Tag)
-  on_text fn(text string)
-  on_close_tag fn(name string)
 }
 
-fn (mut p XMLParser) parse() {
-  for p.parse_tag() {}
-  println('index=${p.index}, len=${p.source.len}')
+fn (mut p XMLParser) parse(on_tag fn(tag string), on_text fn(text string)) {
+  for p.parse_tag(on_tag, on_text) {}
 }
 
-fn (mut p XMLParser) parse_tag() bool {
+fn (mut p XMLParser) parse_tag(on_tag fn(tag string), on_text fn(text string)) bool {
   p.skip_whitespace()
   start := p.index
 
@@ -78,23 +74,13 @@ fn (mut p XMLParser) parse_tag() bool {
         for p.match_char(fn (r rune) bool { return r != `>` }, true) {}
         // consume >
         p.next_char()
-        tag_str := p.source[start .. p.index]
-
-        tag := build_tag(tag_str)
-
-        if tag.is_close {
-          p.on_close_tag(tag.name)
-        } else {
-          p.on_open_tag(tag)
-          if tag.is_self_close {
-            p.on_close_tag(tag.name)
-          }
-        }
+        tag := p.source[start .. p.index]
+        on_tag(tag)
       }
       else {
         for p.match_char(fn (r rune) bool { return r != `<` }, true) {}
         text := p.source[start .. p.index].trim_space()
-        p.on_text(text)
+        on_text(text)
       }
     }
     return true
@@ -103,67 +89,91 @@ fn (mut p XMLParser) parse_tag() bool {
   }
 }
 
-struct TagParser {
-  Parser
-}
-
 struct Tag {
 pub:
   name string
   attributes map[string]string
   is_close bool
   is_self_close bool
+pub mut:
+  text string
+  children []&Tag
 }
 
-fn (mut p TagParser) parse() Tag {
-  // consume <
-  p.next_char()
+fn Tag.new(source string) &Tag {
+  mut parser := TagParser { source: source }
+  return parser.parse()
+}
 
-  p.skip_whitespace()
+struct TagParser {
+  Parser
+}
 
-  is_close := p.is_char(`/`, true)
+fn (mut p TagParser) parse_is_close() bool {
+  return p.is_char(`/`, true)
+}
 
-  p.skip_whitespace()
+fn (mut p TagParser) parse_name() string {
+  name := p.parse_until(fn (r rune) bool { return !is_space(r) && r != `/` && r != `>` })
+  return name
+}
 
-  name := p.parse_until(fn (r rune) bool { return !(is_space(r) || r == `/` || r == `>`) })
-
+fn (mut p TagParser) parse_attributes() map[string]string {
   mut attributes := map[string]string{}
 
-  for p.match_char(fn (r rune) bool { return !(r == `/` || r == `>`) }, false) {
+  for p.match_char(fn (r rune) bool { return r != `>` }, false) {
     p.skip_whitespace()
 
-    if p.match_char(fn (r rune) bool { return r == `/` || r == `>` }, false) {
+    if p.match_char(fn (r rune) bool { return r == `>` || r == `/` || r == `?` }, false) {
       break
     }
 
-    attribute_name := p.parse_until(fn (r rune) bool { return r != `=` })
+    key := p.parse_until(fn (r rune) bool { return r != `=` })
 
     // consume =
     p.next_char()
 
     p.skip_whitespace()
 
-    attribute_value := p.parse_until(fn (r rune) bool { return !(is_space(r) || r == `/` || r == `>`) })
+    // consume left "
+    p.next_char()
+    
+    value := p.parse_until(fn (r rune) bool { return r != `"` })
+    
+    // consume right "
+    p.next_char()
 
-    attributes[attribute_name] = attribute_value.trim('"')
+    attributes[key] = value
   }
 
-  is_self_close := p.is_char(`/`, true)
+  return attributes
+}
+
+fn (mut p TagParser) parse_is_self_close() bool {
+  return p.is_char(`/`, true) || p.is_char(`?`, true)
+}
+
+fn (mut p TagParser) parse() &Tag {
+  // consume <
+  p.next_char()
+
+  is_close := p.parse_is_close()
+
+  name := p.parse_name()
+
+  attributes := p.parse_attributes()
+
+  is_self_close := p.parse_is_self_close()
 
   // consume >
   p.next_char()
 
-  return Tag {
+  return &Tag{
     name: name,
     attributes: attributes,
     is_close: is_close,
     is_self_close: is_self_close,
   }
-}
-
-fn build_tag(source string) Tag {
-  mut parser := TagParser { source: source }
-  return parser.parse()
 }
 
 fn main() {
@@ -181,23 +191,21 @@ xml := '
 
   mut parser := XMLParser {
     source: xml,
-    on_open_tag: on_open_tag,
-    on_text: on_text,
-    on_close_tag: on_close_tag,
   }
 
-  parser.parse()
+  on_tag := fn (tag string) {
+    println('on_tag: ${tag}')
+    obj := Tag.new(tag)
+    println(obj)
+  }
 
+  on_text := fn(text string) {
+    println('on_text: ${text}')
+  }
+
+  parser.parse(on_tag, on_text)
+
+  // obj := Tag.new('<definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1"/>')
+  // println(obj)
 }
 
-fn on_open_tag(tag Tag) {
-  println('on_open_tag: ${tag}')
-}
-
-fn on_text(text string) {
-  println('on_text: ${text}')
-}
-
-fn on_close_tag(name string) {
-  println('on_close_tag: ${name}')
-}
